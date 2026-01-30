@@ -21,7 +21,7 @@ PROFILE_W = 0
 PROFILE_H = 0
 
 
-def create_frame(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
+def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
     """
     Creates a transparent PIL image with the HUD overlay for a specific time t.
     """
@@ -242,4 +242,8 @@ def create_frame(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
  
 
 
+    return img
+
+def create_frame(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
+    img = create_frame_rgba(t, data_row, width, height, bg_color)
     return np.array(img)
