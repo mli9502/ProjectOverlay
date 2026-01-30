@@ -66,14 +66,13 @@ def create_frame(t, data_row, width, height):
     draw.text((margin_left, margin_top + 600), f"{grade:.1f}%", font=font_large, fill="white")
     draw.text((margin_left, margin_top + 700), "GRADIENT", font=font_label, fill="white")
     
-    # 5. Mini Map
+    # 5. Mini Map with Real Background
     full_track = data_row.get('full_track_df')
     if full_track is not None and not full_track.empty:
         # Map settings
         map_size = 300
         map_x = width - map_size - 50
         map_y = 50
-        padding = 20
         
         # Get bounds
         lats = full_track['position_lat'].dropna()
@@ -83,48 +82,90 @@ def create_frame(t, data_row, width, height):
             min_lat, max_lat = lats.min(), lats.max()
             min_lon, max_lon = longs.min(), longs.max()
             
-            # Helper to project
-            def transform(lat, lon):
-                # Simple linear projection (ok for small areas)
-                # Normalize 0-1
-                if max_lon == min_lon: x_norm = 0.5
-                else: x_norm = (lon - min_lon) / (max_lon - min_lon)
-                
-                if max_lat == min_lat: y_norm = 0.5
-                else: y_norm = (lat - min_lat) / (max_lat - min_lat)
-                
-                # Screen coords (flip y)
-                sx = map_x + padding + x_norm * (map_size - 2 * padding)
-                sy = map_y + map_size - padding - y_norm * (map_size - 2 * padding)
-                return sx, sy
+            # Add padding to bounds
+            lat_pad = (max_lat - min_lat) * 0.1
+            lon_pad = (max_lon - min_lon) * 0.1
+            if lat_pad == 0: lat_pad = 0.001
+            if lon_pad == 0: lon_pad = 0.001
+            
+            # Check for cached map or init
+            if not hasattr(create_frame, "smopy_map"):
+                import smopy
+                try:
+                    create_frame.smopy_map = smopy.Map(
+                        (min_lat - lat_pad, min_lon - lon_pad, 
+                         max_lat + lat_pad, max_lon + lon_pad), 
+                        z=15 # fixed zoom? or auto
+                    )
+                    # or allow it to auto-zoom. but we need efficient bbox.
+                    # smopy.Map(box_tuple)
+                    print("Map initialized.")
+                except Exception as e:
+                    print(f"Map init failed: {e}")
+                    create_frame.smopy_map = None
 
-            # Draw full path
-            # Reduce points for performance if needed, but we have small file
-            # Collect points
-            points = []
-            # We can't iterate full df every frame efficiently? 
-            # Ideally verify if 'full_track' is constant or if we should pre-calculate points.
-            # For 5.0 complexity, let's just do it. Optimization later.
-            # Actually, passing full dataframe every frame to this function is inefficient but simple.
-            # Let's assume passed full_track has just the lat/lon columns.
+            map_obj = getattr(create_frame, "smopy_map", None)
             
-            # Using numpy to calculate points fast
-            # But PIL requires list of tuples
-            
-            # Let's just sample every 5th point for drawing speed
-            for i in range(0, len(lats), 5):
-                points.append(transform(lats.iloc[i], longs.iloc[i]))
-            
-            if len(points) > 1:
-                draw.line(points, fill="white", width=3)
-                
-            # Draw current position
-            curr_lat = data_row.get('position_lat')
-            curr_lon = data_row.get('position_long')
-            
-            if pd.notna(curr_lat) and pd.notna(curr_lon):
-                cx, cy = transform(curr_lat, curr_lon)
-                r = 8
-                draw.ellipse((cx-r, cy-r, cx+r, cy+r), fill="yellow", outline="white")
+            if map_obj:
+                # Get the map image as PIL
+                # smopy returns PIL image via to_pil()
+                try:
+                    map_img = map_obj.to_pil()
+                    map_img = map_img.resize((map_size, map_size))
+                    
+                    # Convert to RGBA
+                    map_img = map_img.convert("RGBA")
+                    
+                    # Paste map onto overlay
+                    # Make it slightly transparent?
+                    # img.paste(map_img, (map_x, map_y))
+                    
+                    # Draw a border
+                    draw.rectangle((map_x-2, map_y-2, map_x+map_size+2, map_y+map_size+2), outline="white", width=2)
+                    img.paste(map_img, (map_x, map_y))
+                    
+                    # Now we need to project lat/lon to pixels in this map image
+                    # smopy.to_pixels(lat, lon) -> x, y (relative to original image size)
+                    
+                    # Helper for projection relative to the resized map
+                    def project_point(lat, lon):
+                        x, y = map_obj.to_pixels(lat, lon)
+                        # Scale to new size
+                        # original size
+                        orig_w, orig_h = map_obj.img.size if hasattr(map_obj, 'img') and map_obj.img else map_obj.to_pil().size
+                        
+                        scale_x = map_size / orig_w
+                        scale_y = map_size / orig_h
+                        
+                        sx = map_x + x * scale_x
+                        sy = map_y + y * scale_y
+                        return sx, sy
+
+                    # Draw full path
+                    # Sample points
+                    points = []
+                    # Optimization: maybe cache the path points too later?
+                    for i in range(0, len(lats), 5): # sample 
+                        px, py = project_point(lats.iloc[i], longs.iloc[i])
+                        # clip?
+                        points.append((px, py))
+                    
+                    if len(points) > 1:
+                        draw.line(points, fill="blue", width=3) # Blue track on map
+
+                    # Current pos
+                    curr_lat = data_row.get('position_lat')
+                    curr_lon = data_row.get('position_long')
+                    if pd.notna(curr_lat) and pd.notna(curr_lon):
+                        cx, cy = project_point(curr_lat, curr_lon)
+                        r = 6
+                        draw.ellipse((cx-r, cy-r, cx+r, cy+r), fill="yellow", outline="black")
+
+                except Exception as e:
+                    print(e)
+            else:
+                # Fallback to old drawing if map failed
+                pass 
+
 
     return np.array(img)

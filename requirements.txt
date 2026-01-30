@@ -3,3 +3,5 @@ fitparse
 pandas
 Pillow
 numpy
+smopy
+
