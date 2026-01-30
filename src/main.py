@@ -1,10 +1,11 @@
 import os
+# Use system ffmpeg
 os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
 
 from moviepy import VideoFileClip, VideoClip, CompositeVideoClip
 import sys
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import numpy as np
 import multiprocessing
 import subprocess
@@ -28,8 +29,6 @@ def init_worker(df):
     """
     global DF_GLOBAL
     DF_GLOBAL = df
-    # Pre-warm local overlay cache inside this process if needed
-    # But overlay.py handles its own globals.
 
 def render_chunk(args):
     """
@@ -41,29 +40,19 @@ def render_chunk(args):
     
     # Reload clip inside worker
     clip = VideoFileClip(VIDEO_PATH)
-    # Create subclip
-    # Ensure end_time doesn't exceed duration
     if end_time > clip.duration:
         end_time = clip.duration
         
     sub_clip = clip.subclipped(start_time, end_time)
     
-    # Define make_frame using global DF
     def make_frame_overlay(t):
-        # t is relative to the start of the subclip?
-        # No, in CompositeVideoClip, if we attach it, t is usually relative to the subclip start
-        # BUT we need absolute time for data lookup.
-        # absolute_t = start_time + t
-        
         absolute_t = start_time + t
         time_into_activity = absolute_t + OFFSET_SECONDS
         
         target_timestamp = DF_GLOBAL.index[0] + pd.Timedelta(seconds=time_into_activity)
         
         try:
-            # get_loc with method='nearest' works on datetime index
-            # searchsorted is faster but requires sorting. DatetimeIndex is sorted.
-            # Using get_indexer method='nearest'
+            # get_indexer method='nearest' is fast
             idx = DF_GLOBAL.index.get_indexer([target_timestamp], method='nearest')[0]
             row = DF_GLOBAL.iloc[idx]
         except Exception:
@@ -72,19 +61,21 @@ def render_chunk(args):
         row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
         row_dict['full_track_df'] = DF_GLOBAL
         
-        # Note: creates independent image, so thread-safe/process-safe
         return create_frame(t, row_dict, sub_clip.w, sub_clip.h)
 
     overlay_clip = VideoClip(make_frame_overlay, duration=sub_clip.duration)
     final_clip = CompositeVideoClip([sub_clip, overlay_clip])
     
-    # Render
-    # Use h264_nvenc if possible
+    # Render using CPU Encoding (libx264 ultrafast)
+    # This avoids GPU session limits and allows high parallelism
     final_clip.write_videofile(
         output_filename, 
         fps=24, 
-        codec='h264_nvenc',
-        logger=None # Silence logger to reduce noise
+        codec='libx264',
+        preset='ultrafast',   # Fastest encoding
+        audio=True,
+        threads=2,            # 2 threads per worker for encoding
+        logger=None
     )
     return output_filename
 
@@ -95,12 +86,12 @@ def main():
     
     clip = VideoFileClip(VIDEO_PATH)
     duration = clip.duration
-    # FOR TESTING: Limit duration
-    # duration = 30 
     
     # Configuration
-    num_processes = 8 # or multiprocessing.cpu_count()
-    chunk_duration = 20 # seconds per chunk
+    # Safe conservative value to prevent system crashes
+    # 4 crashed. 1 is safe. Let's try 2.
+    num_processes = 2 
+    chunk_duration = 20 # seconds
     
     chunks = []
     t = 0
@@ -111,7 +102,7 @@ def main():
         t = end
         idx += 1
         
-    print(f"Starting {len(chunks)} chunks with {num_processes} processes...")
+    print(f"Starting {len(chunks)} chunks with {num_processes} processes (CPU Encoding)...")
     start_gen = time.time()
     
     with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df,)) as pool:
@@ -129,7 +120,6 @@ def main():
     if os.path.exists(final_output):
         os.remove(final_output)
         
-    # Standard concat
     subprocess.run([
         "/usr/bin/ffmpeg", "-f", "concat", "-safe", "0", "-i", "ffmpeg_list.txt", 
         "-c", "copy", final_output
