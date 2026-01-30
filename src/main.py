@@ -82,7 +82,7 @@ def main():
         else:
             row_dict = {}
             
-        row_dict['full_track_df'] = df[['position_lat', 'position_long']]
+        row_dict['full_track_df'] = df
         
         return create_frame(t, row_dict, clip.w, clip.h)
 

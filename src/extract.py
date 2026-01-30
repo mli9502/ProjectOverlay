@@ -33,7 +33,7 @@ def parse_fit(fit_path):
         df = df.set_index('timestamp')
         
     # Select relevant columns
-    cols_to_keep = ['speed', 'power', 'cadence', 'altitude', 'grade', 'position_lat', 'position_long']
+    cols_to_keep = ['speed', 'power', 'cadence', 'altitude', 'grade', 'position_lat', 'position_long', 'distance']
     
     # Filter the dataframe to just these columns existing so far
     existing_cols = [c for c in cols_to_keep if c in df.columns]
