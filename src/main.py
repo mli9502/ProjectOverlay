@@ -25,15 +25,17 @@ OFFSET_SECONDS = 18
 DF_GLOBAL = None
 META_W = 0
 META_H = 0
+META_FPS = 0
 
-def init_worker(df, w, h):
+def init_worker(df, w, h, fps):
     """
     Initializer for worker processes to share data.
     """
-    global DF_GLOBAL, META_W, META_H
+    global DF_GLOBAL, META_W, META_H, META_FPS
     DF_GLOBAL = df
     META_W = w
     META_H = h
+    META_FPS = fps
 
 def render_chunk(args):
     """
@@ -58,8 +60,10 @@ def render_chunk(args):
             row = DF_GLOBAL.iloc[idx_val]
         except Exception:
             row = {}
-            
-        row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
+            row_dict = {}
+        else:
+            row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
+        
         row_dict['full_track_df'] = DF_GLOBAL
         
         # Transparent background (0,0,0,0)
@@ -67,11 +71,11 @@ def render_chunk(args):
 
     overlay_clip = VideoClip(make_frame_overlay, duration=duration)
     
-    # Use PNG codec for the overlay video. It's lossless and supports alpha perfectly.
-    # This avoids the tiling issues seen with other codecs.
+    # Use PNG codec for the overlay video to ensure perfect alpha.
+    # We use the EXACT fps of the source video to prevent frame drift/flashing.
     overlay_clip.write_videofile(
         overlay_temp, 
-        fps=24, 
+        fps=META_FPS, 
         codec='png',
         audio=False,
         logger=None,
@@ -79,17 +83,22 @@ def render_chunk(args):
     )
     
     # 2. Composite using FFmpeg with Alpha Overlay
-    # No audio in chunks to avoid dropout issues at boundaries.
+    # ACCURATE SEEKING: put -ss AFTER -i for the source video.
+    # We also force the output framerate and set pixel format explicitly.
     cmd = [
         "/usr/bin/ffmpeg", "-y",
-        "-ss", f"{start_time:.3f}",
-        "-t", f"{duration:.3f}",
         "-i", VIDEO_PATH,
         "-i", overlay_temp,
-        "-filter_complex", "[1:v]format=rgba[ovr];[0:v][ovr]overlay=0:0[out]",
+        "-ss", f"{start_time:.3f}",
+        "-t", f"{duration:.3f}",
+        "-filter_complex", 
+        f"[1:v]format=rgba,scale={META_W}:{META_H}[ovr];"
+        f"[0:v]fps={META_FPS},scale={META_W}:{META_H}[base];"
+        f"[base][ovr]overlay=0:0[out]",
         "-map", "[out]",
-        "-an", # No audio here
+        "-an",
         "-c:v", "libx264", "-preset", "ultrafast",
+        "-r", str(META_FPS),
         final_chunk
     ]
     
@@ -104,23 +113,32 @@ def render_chunk(args):
 def get_video_metadata(path):
     cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration",
+        "-show_entries", "stream=width,height,duration,avg_frame_rate",
         "-of", "json", path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     info = json.loads(result.stdout)
-    w = int(info['streams'][0]['width'])
-    h = int(info['streams'][0]['height'])
-    dur = float(info['streams'][0]['duration'])
-    return w, h, dur
+    stream = info['streams'][0]
+    w = int(stream['width'])
+    h = int(stream['height'])
+    dur = float(stream['duration'])
+    
+    # Parse fps (e.g. "30000/1001" or "30/1")
+    fps_parts = stream['avg_frame_rate'].split('/')
+    if len(fps_parts) == 2:
+        fps = float(fps_parts[0]) / float(fps_parts[1])
+    else:
+        fps = float(fps_parts[0])
+        
+    return w, h, dur, fps
 
 def main():
     print("Parsing FIT file...")
     df = parse_fit(FIT_PATH)
     
     print("Reading Video Metadata...")
-    w, h, duration = get_video_metadata(VIDEO_PATH)
-    print(f"Video: {w}x{h}, Duration: {duration}s")
+    w, h, duration, fps = get_video_metadata(VIDEO_PATH)
+    print(f"Video: {w}x{h}, {fps:.2f} FPS, Duration: {duration}s")
     
     # Configuration
     num_processes = 4
@@ -135,10 +153,10 @@ def main():
         t = end
         idx += 1
         
-    print(f"Starting to render {len(chunks)} chunks with Alpha Fix ({num_processes} workers)...")
+    print(f"Starting to render {len(chunks)} chunks with Framerate Sync ({num_processes} workers)...")
     start_gen = time.time()
     
-    with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df, w, h)) as pool:
+    with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df, w, h, fps)) as pool:
         temp_files = pool.map(render_chunk, chunks)
         
     print(f"Parallel generation took {time.time() - start_gen:.1f}s")
@@ -149,7 +167,6 @@ def main():
         for tf in temp_files:
             f.write(f"file '{tf}'\n")
             
-    # Intermediate concatenated video (no audio)
     temp_video = "temp_final_no_audio.mp4"
     subprocess.run([
         "/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "ffmpeg_list.txt", 
@@ -157,8 +174,7 @@ def main():
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
     # Final Step: Add Original Audio
-    # This avoids audio dropout by using the continuous original stream.
-    print("Adding original audio and finalized video...")
+    print("Adding original audio...")
     final_output = "output_final.mp4"
     if os.path.exists(final_output):
         os.remove(final_output)
@@ -167,11 +183,11 @@ def main():
         "/usr/bin/ffmpeg", "-y",
         "-i", temp_video,
         "-i", VIDEO_PATH,
-        "-map", "0:v",     # Video from concatenated chunks
-        "-map", "1:a",     # Audio from original source
+        "-map", "0:v",
+        "-map", "1:a",
         "-c:v", "copy",
-        "-c:a", "aac",     # Re-encode audio to ensure sync
-        "-shortest",       # Match durations
+        "-c:a", "aac",
+        "-shortest",
         final_output
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
