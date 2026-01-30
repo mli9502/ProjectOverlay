@@ -1,0 +1,19 @@
+# Virtual Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Data files
+*.fit
+*.FIT
+
+# Video files
+*.MP4
+*.mp4
+*.mov
+*.MOV
+
+# Output artifacts
+output_*.mp4
+output_*.jpg
+*.png

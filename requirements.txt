@@ -1,0 +1,5 @@
+moviepy
+fitparse
+pandas
+Pillow
+numpy
