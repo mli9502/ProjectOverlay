@@ -2,7 +2,7 @@ import os
 # Use system ffmpeg
 os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
 
-from moviepy import VideoFileClip, VideoClip, CompositeVideoClip
+from moviepy import VideoClip
 import sys
 import pandas as pd
 from datetime import datetime
@@ -23,24 +23,27 @@ VIDEO_PATH = "DJI_20260128200636_0005_D.MP4"
 FIT_PATH = "21697286066_ACTIVITY.fit"
 OFFSET_SECONDS = 18
 DF_GLOBAL = None
+META_W = 0
+META_H = 0
+META_FPS = 0
 
-def init_worker(df):
-    global DF_GLOBAL
+def init_worker(df, w, h, fps):
+    global DF_GLOBAL, META_W, META_H, META_FPS
     DF_GLOBAL = df
+    META_W = w
+    META_H = h
+    META_FPS = fps
 
-def render_chunk(args):
+def render_overlay_chunk(args):
     """
-    Renders a chunk using the stable CompositeVideoClip logic.
-    Identical to the single-process version that 'looked great'.
+    Renders an overlay-only lossless chunk as ProRes 4444.
+    ProRes 4444 is robust, supports alpha, and is extremely fast.
     """
     start_time, end_time, idx = args
     duration = end_time - start_time
-    output_filename = f"temp_chunk_{idx:03d}.mp4"
+    output_filename = f"temp_ovr_{idx:03d}.mov"
     
-    # Reload clip inside worker
-    clip = VideoFileClip(VIDEO_PATH).subclipped(start_time, end_time)
-    
-    # Shared cache for frame and mask
+    # Accurate rendering logic
     last_t = -1
     last_img_rgba = None
 
@@ -51,73 +54,60 @@ def render_chunk(args):
             time_into_activity = absolute_t + OFFSET_SECONDS
             target_timestamp = DF_GLOBAL.index[0] + pd.Timedelta(seconds=time_into_activity)
             try:
-                # Use nearest timestamp
                 idx_val = DF_GLOBAL.index.get_indexer([target_timestamp], method='nearest')[0]
                 row = DF_GLOBAL.iloc[idx_val]
-            except Exception:
+            except:
                 row = {}
             row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
             row_dict['full_track_df'] = DF_GLOBAL
-            last_img_rgba = create_frame_rgba(t, row_dict, clip.w, clip.h, bg_color=(0, 0, 0, 0))
+            last_img_rgba = create_frame_rgba(t, row_dict, META_W, META_H)
             last_t = t
         return last_img_rgba
 
     def make_frame_rgb(t):
-        img = get_rgba_frame(t)
-        return np.array(img.convert('RGB'))
+        return np.array(get_rgba_frame(t).convert('RGB'))
 
     def make_mask(t):
-        img = get_rgba_frame(t)
-        return np.array(img.split()[-1]) / 255.0
+        return np.array(get_rgba_frame(t).split()[-1]) / 255.0
 
-    # Create overlay clip with mask
-    overlay_rgb = VideoClip(make_frame_rgb, duration=duration)
+    # Build the clip with explicit mask to ensure transparency is preserved
+    color_clip = VideoClip(make_frame_rgb, duration=duration)
     mask_clip = VideoClip(make_mask, duration=duration)
-    overlay_clip = overlay_rgb.with_mask(mask_clip)
-    
-    # Composite
-    final_clip = CompositeVideoClip([clip, overlay_clip])
-    
-    # Write to temp mp4
-    # Using codec=libx264 ensures a healthy container that FFmpeg can concat easily.
+    final_clip = color_clip.with_mask(mask_clip)
+
+    # Write as ProRes 4444 (supports alpha)
+    # Using ffmpeg-params to ensure yuva444p10le pixel format for perfect alpha
     final_clip.write_videofile(
         output_filename, 
-        fps=clip.fps, # Match source FPS
-        codec='libx264',
-        preset='ultrafast',
-        audio=False, # We'll add audio at the very end to avoid dropouts
-        logger=None,
-        threads=4 # Smaller threads per worker to avoid OOM
+        fps=META_FPS, 
+        codec='prores_ks',
+        ffmpeg_params=['-pix_fmt', 'yuva444p10le'],
+        audio=False,
+        logger=None
     )
     
-    # Close clips to free memory
-    clip.close()
     final_clip.close()
-    
     return output_filename
 
 def get_video_metadata(path):
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,duration,avg_frame_rate", "-of", "json", path]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     stream = json.loads(result.stdout)['streams'][0]
-    dur = float(stream['duration'])
-    return dur
+    w, h, dur = int(stream['width']), int(stream['height']), float(stream['duration'])
+    fps_parts = stream['avg_frame_rate'].split('/')
+    fps = float(fps_parts[0]) / float(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
+    return w, h, dur, fps
 
 def main():
     print("Parsing FIT file...")
     df = parse_fit(FIT_PATH)
-    duration = get_video_metadata(VIDEO_PATH)
+    w, h, duration, fps = get_video_metadata(VIDEO_PATH)
+    print(f"Video: {w}x{h}, {fps:.2f} FPS, Duration: {duration}s")
     
-    # LIMIT TO 60 SECONDS FOR VERIFICATION
-    verification_limit = 60
-    if duration > verification_limit:
-        print(f"Limiting to first {verification_limit} seconds for verification...")
-        duration = verification_limit
-
-    # Configuration
-    # 2-3 processes should fit in 8GB RAM for 2.7K video
-    num_processes = 2 
-    chunk_duration = 20 # seconds
+    # 1. Parallel Render Overlay Only (ProRes 4444)
+    # This is fast because it doesn't load the source video.
+    num_processes = 8
+    chunk_duration = 30
     
     chunks = []
     t = 0; idx = 0
@@ -126,36 +116,46 @@ def main():
         chunks.append((t, end, idx))
         t = end; idx += 1
         
-    print(f"Starting parallel rendering of {len(chunks)} chunks ({num_processes} processes)...")
+    print(f"Step 1: Rendering Overlay Chunks (v8 ProRes) ({num_processes} processes)...")
     start_gen = time.time()
+    with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df, w, h, fps)) as pool:
+        ovr_files = pool.map(render_overlay_chunk, chunks)
     
-    with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df,)) as pool:
-        temp_files = pool.map(render_chunk, chunks)
-        
-    print(f"Parallel generation took {time.time() - start_gen:.1f}s")
+    print(f"Overlay rendering took {time.time() - start_gen:.1f}s")
     
-    # Concatenate Video
-    print("Concatenating video chunks...")
-    with open("ffmpeg_list.txt", "w") as f:
-        for tf in temp_files: f.write(f"file '{tf}'\n")
-            
-    temp_video = "temp_final_no_audio.mp4"
-    subprocess.run(["/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "ffmpeg_list.txt", "-c", "copy", temp_video], check=True)
+    # 2. Concat Overlay Chunks
+    print("Step 2: Concatenating overlays...")
+    with open("ovr_list.txt", "w") as f:
+        for tf in ovr_files: f.write(f"file '{tf}'\n")
     
-    # Merge Audio
-    print("Merging continuous audio from source...")
+    full_ovr = "temp_overlay_full.mov"
+    subprocess.run(["/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "ovr_list.txt", "-c", "copy", full_ovr], check=True, capture_output=True)
+    
+    # 3. Final High-Speed GPU Composite
+    # One single pass with NVENC. No seeking jitter, no strides.
+    print("Step 3: NVENC GPU Compositing...")
     final_output = "output_final.mp4"
-    if os.path.exists(final_output): os.remove(final_output)
-    subprocess.run([
-        "/usr/bin/ffmpeg", "-y", "-i", temp_video, "-ss", "0", "-t", str(duration), "-i", VIDEO_PATH,
-        "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-shortest", final_output
-    ], check=True)
+    
+    # We force yuv420p for the final H.264 file to be maximally compatible.
+    cmd = [
+        "/usr/bin/ffmpeg", "-y",
+        "-i", VIDEO_PATH,
+        "-i", full_ovr,
+        "-filter_complex", "[0:v]format=yuv420p[base];[1:v]format=rgba[ovr];[base][ovr]overlay=0:0,format=yuv420p[out]",
+        "-map", "[out]",
+        "-map", "0:a", # Map audio directly from source
+        "-c:v", "h264_nvenc", "-preset", "p1", "-b:v", "20M", # Good bitrate for 2.7K
+        "-c:a", "aac",
+        "-shortest",
+        final_output
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
     
     # Cleanup
-    for tf in temp_files + ["ffmpeg_list.txt", temp_video]:
+    for tf in ovr_files + ["ovr_list.txt", full_ovr]:
         if os.path.exists(tf): os.remove(tf)
     
-    print(f"Done! Written {final_output}")
+    print(f"Done! Written {final_output}. Total time: {time.time() - start_gen:.1f}s")
 
 if __name__ == "__main__":
     main()
