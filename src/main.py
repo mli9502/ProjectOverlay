@@ -105,8 +105,9 @@ def main():
     # User said "I want to build something...". Let's output a short test file first?
     # "Performance: Video processing is slow. We will generate a short 10-second clip first for verification."
     
-    output_filename = "output_overlay_test.mp4"
-    final_clip.subclipped(0, 10).write_videofile(output_filename, fps=24, codec='libx264')
+    # Write output
+    output_filename = "output_final.mp4"
+    final_clip.write_videofile(output_filename, fps=24, codec='libx264')
     print(f"Written {output_filename}")
 
 if __name__ == "__main__":
