@@ -1,6 +1,8 @@
+import os
+os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
+
 from moviepy import VideoFileClip, TextClip, CompositeVideoClip, ImageClip
 import sys
-import os
 import pandas as pd
 from datetime import datetime, timedelta
 import numpy as np
@@ -107,7 +109,12 @@ def main():
     
     # Write output
     output_filename = "output_final.mp4"
-    final_clip.write_videofile(output_filename, fps=24, codec='libx264')
+    # Use GPU acceleration
+    final_clip.write_videofile(
+        output_filename, 
+        fps=24, 
+        codec='h264_nvenc'
+    )
     print(f"Written {output_filename}")
 
 if __name__ == "__main__":
