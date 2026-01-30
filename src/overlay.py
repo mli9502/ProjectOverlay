@@ -21,12 +21,12 @@ PROFILE_W = 0
 PROFILE_H = 0
 
 
-def create_frame(t, data_row, width, height):
+def create_frame(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
     """
     Creates a transparent PIL image with the HUD overlay for a specific time t.
     """
-    # Create a transparent image
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    # Create a background with bg_color (supports RGBA or RGB)
+    img = Image.new('RGBA' if len(bg_color) == 4 else 'RGB', (width, height), bg_color)
     draw = ImageDraw.Draw(img)
     
     # Fonts are loaded globally

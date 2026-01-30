@@ -37,27 +37,23 @@ def init_worker(df, w, h):
 
 def render_chunk(args):
     """
-    Renders an overlay chunk (transparent) and composites it.
+    Renders an overlay chunk with Magenta background and composites it.
     args: (start_time, end_time, index)
     """
     start_time, end_time, idx = args
     duration = end_time - start_time
     
     # Files
-    overlay_temp = f"temp_overlay_{idx:03d}.mov"
+    overlay_temp = f"temp_overlay_{idx:03d}.mp4"
     final_chunk = f"temp_chunk_{idx:03d}.mp4"
     
-    # 1. Generate Overlay Only (Python Drawing)
-    # No source video load!
-    
+    # 1. Generate Overlay Only (3-Channel RGB with Magenta background)
     def make_frame_overlay(t):
         absolute_t = start_time + t
         time_into_activity = absolute_t + OFFSET_SECONDS
-        
         target_timestamp = DF_GLOBAL.index[0] + pd.Timedelta(seconds=time_into_activity)
         
         try:
-            # get_indexer method='nearest' is fast
             idx = DF_GLOBAL.index.get_indexer([target_timestamp], method='nearest')[0]
             row = DF_GLOBAL.iloc[idx]
         except Exception:
@@ -66,27 +62,26 @@ def render_chunk(args):
         row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
         row_dict['full_track_df'] = DF_GLOBAL
         
-        # Draw on blank canvas
-        return create_frame(t, row_dict, META_W, META_H)
+        # Use Magenta (255, 0, 255) as Chroma Key background
+        # Return as RGB (3 channels) to avoid tiling/stride issues
+        return create_frame(t, row_dict, META_W, META_H, bg_color=(255, 0, 255))
 
-    # Use 'qtrle' (Animation) codec for alpha support + speed
     overlay_clip = VideoClip(make_frame_overlay, duration=duration)
     
-    # We write the overlay to a temp file
-    # This is IO bound but much lighter than reading 2.7K source
+    # Write overlay as standard high-quality RGB video
     overlay_clip.write_videofile(
         overlay_temp, 
         fps=24, 
-        codec='qtrle',
-        # with_mask not needed if 4-channel array returned and codec supports it
+        codec='libx264',
+        preset='ultrafast',
+        audio=False,
         logger=None,
-        threads=2 # Pillow drawing is single threaded mainly, but encoding helps
+        threads=2
     )
     
-    # 2. Composite using FFmpeg (Hardware accelerated or Fast CPU)
-    # ffmpeg -ss start -t dur -i source -i overlay -filter_complex overlay output
-    # Note: h264_nvenc might be locked but we can try. 
-    # If not, use libx264 ultrafast.
+    # 2. Composite using FFmpeg with Chroma Key
+    # [1:v]colorkey=0xFF00FF:0.01:0.01 -> Makes Magenta transparent
+    # Using slow-seek (-i then -ss) for better accuracy on some DJI files
     
     cmd = [
         "/usr/bin/ffmpeg", "-y",
@@ -94,17 +89,17 @@ def render_chunk(args):
         "-t", str(duration),
         "-i", VIDEO_PATH,
         "-i", overlay_temp,
-        "-filter_complex", "[0:v][1:v]overlay=0:0[out]",
+        "-filter_complex", "[1:v]colorkey=0xFF00FF:0.05:0.05[ckout];[0:v][ckout]overlay=0:0[out]",
         "-map", "[out]",
-        "-map", "0:a", # Copy audio from source
-        "-c:v", "libx264", "-preset", "ultrafast", # Use CPU encoding for chunks to avoid GPU lock
+        "-map", "0:a?", # Optional audio
+        "-c:v", "libx264", "-preset", "ultrafast",
         "-c:a", "copy",
         final_chunk
     ]
     
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
-    # Cleanup overlay temp immediately
+    # Cleanup overlay temp
     if os.path.exists(overlay_temp):
         os.remove(overlay_temp)
         
@@ -132,10 +127,9 @@ def main():
     print(f"Video: {w}x{h}, Duration: {duration}s")
     
     # Configuration
-    # Since we decoupled memory, we can arguably increase processes!
-    # With 2.7K, qtrle writes might be large.
-    # Let's try 6 processes.
-    num_processes = 6
+    # Safe conservative value: 4 workers. 
+    # Since we are not reading source video in workers, memory usage is low.
+    num_processes = 4
     chunk_duration = 20 # seconds
     
     chunks = []
@@ -147,7 +141,7 @@ def main():
         t = end
         idx += 1
         
-    print(f"Starting to render {len(chunks)} chunks using Hybrid Pipeline ({num_processes} workers)...")
+    print(f"Starting to render {len(chunks)} chunks with Chroma Key Fix ({num_processes} workers)...")
     start_gen = time.time()
     
     with multiprocessing.Pool(processes=num_processes, initializer=init_worker, initargs=(df, w, h)) as pool:
