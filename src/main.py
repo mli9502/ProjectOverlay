@@ -10,10 +10,12 @@ import subprocess
 import time
 import json
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+# Add project root to path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, PROJECT_ROOT)
 
-from extract import parse_fit
-from overlay import create_frame_rgba
+from src.core.extract import parse_fit
+from src.core.overlay import create_frame_rgba
 
 VIDEO_PATH = "DJI_20260128200636_0005_D.MP4"
 FIT_PATH = "21697286066_ACTIVITY.fit"

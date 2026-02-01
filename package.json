@@ -1,0 +1,29 @@
+{
+  "name": "projectoverlay",
+  "version": "1.0.0",
+  "description": "A Python tool to overlay fitness data (Speed, Power, Cadence, Gradient) and a dynamic mini-map onto action camera video.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mli9502/ProjectOverlay.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mli9502/ProjectOverlay/issues"
+  },
+  "homepage": "https://github.com/mli9502/ProjectOverlay#readme",
+  "devDependencies": {
+    "electron": "^40.1.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  }
+}

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Overlay Generator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Left Panel - Controls -->
+        <aside class="controls-panel">
+            <h1 class="app-title">🚴 Video Overlay</h1>
+
+            <!-- File Selection -->
+            <section class="section">
+                <h2>Files</h2>
+                <div class="file-input">
+                    <label>Video File</label>
+                    <button id="btn-video" class="btn btn-secondary">
+                        <span id="video-name">Select Video...</span>
+                    </button>
+                </div>
+                <div class="file-input">
+                    <label>FIT File</label>
+                    <button id="btn-fit" class="btn btn-secondary">
+                        <span id="fit-name">Select FIT...</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Components -->
+            <section class="section components-section">
+                <h2>Overlay Components</h2>
+                <div id="components-list"></div>
+            </section>
+
+            <!-- Generate Button -->
+            <div class="generate-section">
+                <button id="btn-generate" class="btn btn-primary" disabled>
+                    Generate Video
+                </button>
+                <div id="progress-container" class="hidden">
+                    <div class="progress-bar">
+                        <div id="progress-fill" class="progress-fill"></div>
+                    </div>
+                    <span id="progress-text">0%</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Right Panel - Preview -->
+        <main class="preview-panel">
+            <div class="preview-header">
+                <h2>Preview</h2>
+            </div>
+            <div class="preview-container">
+                <div id="preview-placeholder" class="preview-placeholder">
+                    Load a video and FIT file to preview
+                </div>
+                <img id="preview-img" class="preview-img hidden" alt="Preview">
+            </div>
+            <div class="timeline-container">
+                <label>Timeline:</label>
+                <input type="range" id="timeline" min="0" max="100" value="0" disabled>
+                <span id="time-display">0:00</span>
+            </div>
+        </main>
+    </div>
+
+    <!-- File Browser Modal -->
+    <div id="file-browser-modal" class="modal hidden">
+        <div class="modal-content file-browser">
+            <div class="modal-header">
+                <h3 id="file-browser-title">Select File</h3>
+                <button id="file-browser-close" class="btn-close">&times;</button>
+            </div>
+            <div class="file-browser-path">
+                <span>Path:</span>
+                <input type="text" id="current-path" readonly>
+            </div>
+            <div class="file-browser-list" id="file-list">
+                <!-- File entries will be inserted here -->
+            </div>
+            <div class="file-browser-filename hidden" id="filename-row">
+                <label for="output-filename">Filename:</label>
+                <input type="text" id="output-filename" placeholder="output.mp4">
+            </div>
+            <div class="modal-footer">
+                <button id="file-browser-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="file-browser-select" class="btn btn-primary" disabled>Select</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js?v=5"></script>
+</body>
+
+</html>
