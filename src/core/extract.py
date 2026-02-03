@@ -33,7 +33,7 @@ def parse_fit(fit_path):
         df = df.set_index('timestamp')
         
     # Select relevant columns
-    cols_to_keep = ['speed', 'power', 'cadence', 'altitude', 'grade', 'position_lat', 'position_long', 'distance']
+    cols_to_keep = ['speed', 'power', 'cadence', 'altitude', 'grade', 'heart_rate', 'position_lat', 'position_long', 'distance']
     
     # Filter the dataframe to just these columns existing so far
     existing_cols = [c for c in cols_to_keep if c in df.columns]
@@ -61,5 +61,36 @@ def parse_fit(fit_path):
     if 'speed' in df.columns:
         df['speed_kph'] = df['speed'] * 3.6
         df['speed_mph'] = df['speed'] * 2.23694
+
+    # Calculate Gradient if missing or to ensure accuracy
+    # Grade = (delta_altitude / delta_distance) * 100
+    if 'altitude' in df.columns and 'distance' in df.columns:
+        # Calculate diffs
+        delta_alt = df['altitude'].diff()
+        delta_dist = df['distance'].diff()
+        
+        # Avoid division by zero and extremely small distances
+        # We only calculate grade when moving (dist > 0.5m in 1s)
+        mask = delta_dist > 0.5
+        
+        # Calculate raw grade
+        raw_grade = float('nan')
+        if len(df) > 0:
+            raw_grade = np.full(len(df), np.nan)
+            
+            # Vectorized calculation
+            valid_grade = (delta_alt[mask] / delta_dist[mask]) * 100
+            
+            # Assign valid grades
+            df.loc[mask, 'grade_calculated'] = valid_grade
+            
+            # Fill NaNs (stopped or invalid) with 0 or previous
+            df['grade_calculated'] = df['grade_calculated'].fillna(0)
+            
+            # Clamp unrealistic values (e.g. GPS jumps)
+            df['grade_calculated'] = df['grade_calculated'].clip(-40, 40)
+            
+            # Smooth the grade (5s rolling window) to reduce GPS noise
+            df['grade'] = df['grade_calculated'].rolling(window=5, center=True).mean().fillna(0)
     
     return df

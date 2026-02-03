@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import argparse
+import datetime
 
 # Ensure FFmpeg is found
 os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
@@ -27,14 +28,27 @@ from src.core.overlay import create_frame_rgba
 
 def get_video_metadata(path):
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", 
-           "-show_entries", "stream=width,height,duration,avg_frame_rate", 
+           "-show_entries", "stream=width,height,duration,avg_frame_rate:format_tags=creation_time", 
            "-of", "json", path]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    stream = json.loads(result.stdout)['streams'][0]
+    info = json.loads(result.stdout)
+    stream = info['streams'][0]
     w, h, dur = int(stream['width']), int(stream['height']), float(stream['duration'])
+    
+    # Try to get creation_time
+    creation_time_str = info.get('format', {}).get('tags', {}).get('creation_time', None)
+    creation_time = None
+    if creation_time_str:
+        # ISO format: 2026-01-29T04:06:37.000000Z
+        try:
+             # Handle Z for UTC
+            creation_time = datetime.datetime.fromisoformat(creation_time_str.replace('Z', '+00:00'))
+        except:
+            pass
+
     fps_parts = stream['avg_frame_rate'].split('/')
     fps = float(fps_parts[0]) / float(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
-    return w, h, dur, fps
+    return w, h, dur, fps, creation_time
 
 
 # Globals for multiprocessing
@@ -42,19 +56,20 @@ DF_GLOBAL = None
 META_W = 0
 META_H = 0
 META_FPS = 0
-OFFSET_SECONDS = 18
+OFFSET_SECONDS = 0
 VIDEO_PATH = None
 CONFIG = None
 
 
-def init_worker(df, w, h, fps, video_path, config):
-    global DF_GLOBAL, META_W, META_H, META_FPS, VIDEO_PATH, CONFIG
+def init_worker(df, w, h, fps, video_path, config, offset):
+    global DF_GLOBAL, META_W, META_H, META_FPS, VIDEO_PATH, CONFIG, OFFSET_SECONDS
     DF_GLOBAL = df
     META_W = w
     META_H = h
     META_FPS = fps
     VIDEO_PATH = video_path
     CONFIG = config
+    OFFSET_SECONDS = offset
 
 
 def render_overlay_chunk(args):
@@ -95,7 +110,7 @@ def render_overlay_chunk(args):
     final_clip.write_videofile(
         output_filename, 
         fps=META_FPS, 
-        codec='png',
+        codec='qtrle',  # QuickTime RLE: lossless RGBA, smaller than PNG
         audio=False,
         logger=None
     )
@@ -111,6 +126,79 @@ def report_progress(percent, status=""):
     print(f"PROGRESS:{percent}", flush=True)
 
 
+def hierarchical_concat(files, output_file, batch_size=10, progress_callback=None):
+    """
+    Concatenate files in a tree structure to avoid memory issues.
+    Instead of concat([f0..f119]) at once, do:
+      Round 1: concat f0..f9 -> batch0, f10..f19 -> batch1, ...
+      Round 2: concat batch0..batch9 -> super0, ...
+      Round 3: ...until one file remains
+    """
+    round_num = 0
+    current_files = files[:]
+    all_temp_files = []  # Track all intermediate files for cleanup
+    
+    while len(current_files) > 1:
+        round_num += 1
+        next_files = []
+        num_batches = (len(current_files) + batch_size - 1) // batch_size
+        
+        for batch_idx in range(num_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(current_files))
+            batch_files = current_files[start:end]
+            
+            if len(batch_files) == 1:
+                # Only one file in this batch, just carry it forward
+                next_files.append(batch_files[0])
+            else:
+                # Concatenate this batch
+                batch_output = f"temp_concat_r{round_num}_b{batch_idx}.mov"
+                all_temp_files.append(batch_output)
+                
+                # Write concat list
+                list_file = f"temp_concat_r{round_num}_b{batch_idx}.txt"
+                all_temp_files.append(list_file)
+                with open(list_file, 'w') as f:
+                    for bf in batch_files:
+                        f.write(f"file '{bf}'\n")
+                
+                # Run FFmpeg concat
+                subprocess.run(
+                    ["/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                     "-i", list_file, "-c", "copy", batch_output],
+                    check=True, capture_output=True
+                )
+                next_files.append(batch_output)
+                
+                if progress_callback:
+                    progress_callback(round_num, batch_idx + 1, num_batches)
+        
+        # Clean up files from previous round (except original input files)
+        if round_num > 1:
+            for f in current_files:
+                if f.startswith('temp_concat_') and os.path.exists(f):
+                    os.remove(f)
+        
+        current_files = next_files
+    
+    # Rename/move final file to output
+    if current_files:
+        final_file = current_files[0]
+        if final_file != output_file:
+            if os.path.exists(output_file):
+                os.remove(output_file)
+            os.rename(final_file, output_file)
+    
+    # Clean up remaining temp files (list files, etc.)
+    for f in all_temp_files:
+        if os.path.exists(f) and f != output_file:
+            try:
+                os.remove(f)
+            except:
+                pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--fit', required=True, help='Path to FIT file')
@@ -124,8 +212,20 @@ def main():
     report_progress(5, "Parsing FIT data...")
     
     df = parse_fit(args.fit)
-    w, h, duration, fps = get_video_metadata(args.video)
+    w, h, duration, fps, creation_time = get_video_metadata(args.video)
     
+    calculated_offset = 0
+    if creation_time and len(df) > 0:
+        fit_start = df.index[0]
+        # Ensure fit_start is timezone aware (UTC) if not already
+        if fit_start.tzinfo is None:
+            fit_start = fit_start.replace(tzinfo=datetime.timezone.utc)
+            
+        calculated_offset = (creation_time - fit_start).total_seconds()
+        report_progress(7, f"Auto-Sync: Video created {creation_time}, Activity started {fit_start}, Offset: {calculated_offset:.2f}s")
+    else:
+        report_progress(7, "Warning: Could not auto-sync (missing metadata). Using default offset 0s")
+
     report_progress(10, f"Video: {w}x{h}, {duration:.1f}s @ {fps:.1f}fps")
     
     num_processes = 8
@@ -143,25 +243,25 @@ def main():
     with multiprocessing.Pool(
         processes=num_processes, 
         initializer=init_worker, 
-        initargs=(df, w, h, fps, args.video, config)
+        initargs=(df, w, h, fps, args.video, config, calculated_offset)
     ) as pool:
         ovr_files = []
         for i, result in enumerate(pool.imap(render_overlay_chunk, chunks)):
             ovr_files.append(result)
             progress = 15 + int((i + 1) / len(chunks) * 55)
-            report_progress(progress, f"Rendered chunk {i+1}/{len(chunks)}")
+            report_progress(progress, f"Rendering overlay: {i+1}/{len(chunks)} chunks complete")
     
     report_progress(75, "Concatenating overlay chunks...")
     
-    # Concat overlays
-    with open("ovr_list.txt", "w") as f:
-        for tf in ovr_files:
-            f.write(f"file '{tf}'\n")
-    
+    # Hierarchical concatenation
     full_ovr = "temp_overlay_full.mov"
-    subprocess.run(["/usr/bin/ffmpeg", "-y", "-f", "concat", "-safe", "0", 
-                   "-i", "ovr_list.txt", "-c", "copy", full_ovr], 
-                  check=True, capture_output=True)
+    
+    def concat_progress(round_num, batch, total):
+        # Map to 75-85% progress range
+        progress = 75 + int((batch / total) * 10)
+        report_progress(progress, f"Concat Round {round_num}: Batch {batch}/{total}")
+    
+    hierarchical_concat(ovr_files, full_ovr, batch_size=10, progress_callback=concat_progress)
     
     report_progress(85, "Compositing final video...")
     
@@ -182,9 +282,12 @@ def main():
     
     # Cleanup
     report_progress(95, "Cleaning up temp files...")
-    for tf in ovr_files + ["ovr_list.txt", full_ovr]:
+    for tf in ovr_files + [full_ovr]:
         if os.path.exists(tf):
-            os.remove(tf)
+            try:
+                os.remove(tf)
+            except:
+                pass
     
     report_progress(100, "Complete!")
 

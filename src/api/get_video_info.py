@@ -13,7 +13,7 @@ def get_video_metadata(video_path):
     """Get video metadata using ffprobe."""
     cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,duration,avg_frame_rate",
+        "-show_entries", "stream=width,height,duration,avg_frame_rate:format_tags=creation_time",
         "-of", "json", video_path
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -23,6 +23,9 @@ def get_video_metadata(video_path):
     w = int(stream['width'])
     h = int(stream['height'])
     dur = float(stream['duration'])
+    
+    # Try to get creation_time from format tags
+    creation_time = info.get('format', {}).get('tags', {}).get('creation_time', None)
     
     fps_parts = stream['avg_frame_rate'].split('/')
     if len(fps_parts) == 2:
@@ -34,7 +37,8 @@ def get_video_metadata(video_path):
         'width': w,
         'height': h,
         'duration': dur,
-        'fps': fps
+        'fps': fps,
+        'creation_time': creation_time
     }
 
 

@@ -158,6 +158,28 @@ app.post('/api/video-info', async (req, res) => {
     }
 });
 
+// API: Calculate Sync Offset
+app.post('/api/calculate-sync', async (req, res) => {
+    try {
+        const { fitPath, videoPath } = req.body;
+        if (!fitPath || !videoPath) {
+            return res.status(400).json({ error: 'Missing fitPath or videoPath' });
+        }
+
+        const scriptPath = path.join(__dirname, 'api', 'calculate_sync.py');
+        const output = await runPython(scriptPath, [
+            '--fit', fitPath,
+            '--video', videoPath
+        ]);
+
+        const data = JSON.parse(output);
+        res.json(data);
+    } catch (err) {
+        console.error('Sync calculation error:', err);
+        res.status(500).json({ error: err.toString() });
+    }
+});
+
 // API: Preview - Generate a single frame preview
 app.post('/api/preview', async (req, res) => {
     try {

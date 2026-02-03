@@ -228,6 +228,16 @@ if (!window.api) {
                 return data.image;
             },
 
+            calculateSync: async (params) => {
+                const response = await fetch('/api/calculate-sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+                if (!response.ok) throw new Error('Failed to calculate sync');
+                return response.json();
+            },
+
             generate: async (config) => {
                 // Start Job
                 const response = await fetch('/api/generate', {
@@ -342,9 +352,10 @@ const state = {
         speed: { enabled: true, scale: 1.0, opacity: 1.0 },
         power: { enabled: true, scale: 1.0, opacity: 1.0 },
         cadence: { enabled: true, scale: 1.0, opacity: 1.0 },
+        heart_rate: { enabled: true, scale: 1.0, opacity: 1.0 },
         gradient: { enabled: true, scale: 1.0, opacity: 1.0 },
         map: { enabled: true, scale: 1.0, opacity: 1.0 },
-        elevation: { enabled: true, scale: 1.0, opacity: 1.0 }
+        elevation: { enabled: true, 'scale': 1.0, opacity: 1.0 }
     }
 };
 
@@ -353,6 +364,7 @@ const textMetrics = [
     { id: 'speed', name: 'Speed (MPH)', icon: '🏃' },
     { id: 'power', name: 'Power (W)', icon: '⚡' },
     { id: 'cadence', name: 'Cadence (RPM)', icon: '🔄' },
+    { id: 'heart_rate', name: 'Heart Rate (BPM)', icon: '❤️' },
     { id: 'gradient', name: 'Gradient (%)', icon: '📈' }
 ];
 
@@ -502,6 +514,28 @@ document.getElementById('btn-fit').addEventListener('click', async () => {
 function checkReady() {
     const ready = state.videoPath && state.fitPath;
     document.getElementById('btn-generate').disabled = !ready;
+
+    // Calculate sync offset if ready
+    if (ready) {
+        document.getElementById('sync-status').textContent = 'Calculating sync...';
+        window.api.calculateSync({ videoPath: state.videoPath, fitPath: state.fitPath })
+            .then(data => {
+                if (data.success) {
+                    const offset = data.offset.toFixed(2);
+                    document.getElementById('sync-status').innerHTML = `Sync Offset: <b>${offset}s</b> <br><small style="font-size:0.8em; opacity:0.8">Video: ${data.video_created}<br>FIT: ${data.fit_start}</small>`;
+                    document.getElementById('sync-status').style.color = 'var(--text-primary)';
+                } else {
+                    document.getElementById('sync-status').textContent = 'Sync Failed: ' + data.message;
+                    document.getElementById('sync-status').style.color = '#ff6b6b';
+                }
+            })
+            .catch(err => {
+                document.getElementById('sync-status').textContent = 'Sync Error';
+                console.error(err);
+            });
+    } else {
+        document.getElementById('sync-status').textContent = '';
+    }
 }
 
 // Preview

@@ -46,6 +46,9 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
             'gradient': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
             'map': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
             'elevation': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
+            'map': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
+            'elevation': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
+            'heart_rate': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
         }
     
     def get_cfg(name):
@@ -107,7 +110,23 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         draw.text((margin_left, y_pos), f"{cadence:.0f}", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "RPM", font=font_label, fill=color)
     
-    # 4. Gradient
+    # 4. Heart Rate (Below Cadence)
+    cfg = get_cfg('heart_rate')
+    if cfg['enabled']:
+        scale = cfg.get('scale', 1.0)
+        font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
+        font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
+        
+        hr = data_row.get('heart_rate', 0)
+        if pd.isna(hr): hr = 0
+        
+        opacity = int(255 * cfg['opacity'])
+        color = (255, 255, 255, opacity)
+        y_pos = margin_top + 600
+        draw.text((margin_left, y_pos), f"{hr:.0f}", font=font_large, fill=color)
+        draw.text((margin_left, y_pos + int(80 * scale)), "BPM", font=font_label, fill=color)
+
+    # 5. Gradient (Below HR)
     cfg = get_cfg('gradient')
     if cfg['enabled']:
         scale = cfg.get('scale', 1.0)
@@ -119,11 +138,11 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         
         opacity = int(255 * cfg['opacity'])
         color = (255, 255, 255, opacity)
-        y_pos = margin_top + 600
+        y_pos = margin_top + 800
         draw.text((margin_left, y_pos), f"{grade:.1f}%", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "GRADIENT", font=font_label, fill=color)
     
-    # 5. Mini Map with Real Background
+    # 6. Mini Map with Real Background
     cfg = get_cfg('map')
     if cfg['enabled']:
         full_track = data_row.get('full_track_df')
@@ -233,7 +252,7 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
                         r = max(4, int(6 * cfg.get('scale', 1.0)))  # Scale marker size too
                         draw.ellipse((cx-r, cy-r, cx+r, cy+r), fill="yellow", outline="black")
 
-    # 6. Elevation Profile (Bottom)
+    # 7. Elevation Profile (Bottom)
     cfg = get_cfg('elevation')
     if cfg['enabled']:
         full_track = data_row.get('full_track_df')
