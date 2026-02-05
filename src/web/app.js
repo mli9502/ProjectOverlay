@@ -587,11 +587,13 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
     progressContainer.classList.remove('hidden');
 
     try {
+        const qualityMode = document.getElementById('quality-mode').value;
         await window.api.generate({
             fitPath: state.fitPath,
             videoPath: state.videoPath,
             outputPath: outputPath,
-            config: state.config
+            config: state.config,
+            quality: qualityMode
         });
 
         btn.textContent = 'Complete!';
@@ -620,3 +622,56 @@ window.api.onStatus((status) => {
 
 // Initialize
 initComponents();
+
+// Server Health Check
+(function initHealthCheck() {
+    let serverConnected = true;
+
+    // Create disconnection banner
+    const banner = document.createElement('div');
+    banner.id = 'server-disconnected-banner';
+    banner.innerHTML = '⚠️ Server disconnected - Please restart the server';
+    banner.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        background: #dc3545;
+        color: white;
+        padding: 10px;
+        text-align: center;
+        font-weight: bold;
+        z-index: 10000;
+        display: none;
+    `;
+    document.body.prepend(banner);
+
+    async function checkHealth() {
+        try {
+            const response = await fetch('/api/status', {
+                method: 'GET',
+                signal: AbortSignal.timeout(3000)
+            });
+            if (response.ok) {
+                if (!serverConnected) {
+                    console.log('Server reconnected');
+                    serverConnected = true;
+                    banner.style.display = 'none';
+                }
+            } else {
+                throw new Error('Server returned error');
+            }
+        } catch (err) {
+            if (serverConnected) {
+                console.warn('Server disconnected:', err.message);
+                serverConnected = false;
+                banner.style.display = 'block';
+            }
+        }
+    }
+
+    // Check every 5 seconds
+    setInterval(checkHealth, 5000);
+    // Initial check
+    checkHealth();
+})();

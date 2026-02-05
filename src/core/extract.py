@@ -50,11 +50,33 @@ def parse_fit(fit_path):
     if 'position_long' in df.columns:
         df['position_long'] = df['position_long'] * (180 / 2**31)
 
-    # Resample to 1s to ensure regular grid, then interpolate
+    # Resample to 1s to ensure regular grid
     df = df.resample('1s').mean()
-    df = df.interpolate(method='time')
     
-    # Fill remaining NaNs (beginning/end)
+    # Handle auto-pause: for dynamic metrics (speed, power, cadence),
+    # preserve NaN/zeros during pause instead of interpolating through
+    # For position and altitude, forward-fill is appropriate
+    
+    # Position and altitude: forward-fill (GPS data stays constant when stopped)
+    position_cols = ['position_lat', 'position_long', 'altitude', 'distance']
+    for col in position_cols:
+        if col in df.columns:
+            df[col] = df[col].ffill()
+    
+    # Dynamic metrics: detect paused periods (speed near 0) and don't interpolate
+    # First, interpolate only small gaps (< 3s) for these metrics
+    # Note: heart_rate is handled separately since HR doesn't go to 0 when stopped
+    dynamic_cols = ['speed', 'power', 'cadence']
+    for col in dynamic_cols:
+        if col in df.columns:
+            # Only interpolate gaps of up to 2 seconds (to smooth GPS jitter)
+            df[col] = df[col].interpolate(method='time', limit=2)
+    
+    # Heart rate: fully interpolate since your heart keeps beating during pause
+    if 'heart_rate' in df.columns:
+        df['heart_rate'] = df['heart_rate'].interpolate(method='time')
+    
+    # Fill remaining NaNs with 0 (represents stopped/paused state)
     df = df.fillna(0)
     
     # speed often in m/s, convert to km/h and mph

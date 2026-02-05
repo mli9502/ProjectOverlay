@@ -218,7 +218,7 @@ app.post('/api/generate', (req, res) => {
         return res.status(409).json({ error: 'Job already running' });
     }
 
-    const { videoPath, fitPath, outputPath, config } = req.body;
+    const { videoPath, fitPath, outputPath, config, quality } = req.body;
 
     // Reset state
     currentJob = {
@@ -239,7 +239,8 @@ app.post('/api/generate', (req, res) => {
         '--fit', fitPath,
         '--video', videoPath,
         '--output', outputPath,
-        '--config', configStr
+        '--config', configStr,
+        '--quality', quality || 'crf'
     ]);
 
     // Non-blocking response

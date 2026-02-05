@@ -50,7 +50,12 @@ A hybrid Electron + Python application to overlay fitness data (Speed, Power, Ca
    The server runs on port 3001 by default.
 
 2. **Open in browser:**
-   Navigate to `http://localhost:3001` in your web browser.
+   - **Local Access**: Navigate to `http://localhost:3001`
+   - **WSL2 / Remote Access**: To access from Windows or other devices, you may need the internal WSL2 IP address:
+     ```bash
+     hostname -I | awk '{print $1}'
+     ```
+     Then navigate to `http://<YOUR_WSL_IP>:3001` (e.g., `http://172.22.x.x:3001`).
 
 3. **Using the app:**
    - Click **"Select Video..."** to choose your action camera video (MP4, MOV, etc.)

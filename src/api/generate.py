@@ -28,7 +28,7 @@ from src.core.overlay import create_frame_rgba
 
 def get_video_metadata(path):
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", 
-           "-show_entries", "stream=width,height,duration,avg_frame_rate:format_tags=creation_time", 
+           "-show_entries", "stream=width,height,duration,avg_frame_rate,bit_rate:format=bit_rate:format_tags=creation_time", 
            "-of", "json", path]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     info = json.loads(result.stdout)
@@ -48,7 +48,21 @@ def get_video_metadata(path):
 
     fps_parts = stream['avg_frame_rate'].split('/')
     fps = float(fps_parts[0]) / float(fps_parts[1]) if len(fps_parts) == 2 else float(fps_parts[0])
-    return w, h, dur, fps, creation_time
+    
+    # Get bitrate (prefer stream bitrate, fallback to format bitrate)
+    bitrate = None
+    if 'bit_rate' in stream and stream['bit_rate'] != 'N/A':
+        try:
+            bitrate = int(stream['bit_rate'])
+        except:
+            pass
+    if bitrate is None and 'format' in info and 'bit_rate' in info['format']:
+        try:
+            bitrate = int(info['format']['bit_rate'])
+        except:
+            pass
+    
+    return w, h, dur, fps, creation_time, bitrate
 
 
 # Globals for multiprocessing
@@ -205,6 +219,7 @@ def main():
     parser.add_argument('--video', required=True, help='Path to video file')
     parser.add_argument('--output', required=True, help='Output path')
     parser.add_argument('--config', type=str, default='{}', help='JSON config')
+    parser.add_argument('--quality', type=str, default='crf', help='Quality mode: crf or match')
     args = parser.parse_args()
     
     config = json.loads(args.config)
@@ -212,7 +227,7 @@ def main():
     report_progress(5, "Parsing FIT data...")
     
     df = parse_fit(args.fit)
-    w, h, duration, fps, creation_time = get_video_metadata(args.video)
+    w, h, duration, fps, creation_time, source_bitrate = get_video_metadata(args.video)
     
     calculated_offset = 0
     if creation_time and len(df) > 0:
@@ -265,20 +280,108 @@ def main():
     
     report_progress(85, "Compositing final video...")
     
-    # Final composite
+    # Build encoding options based on quality mode
+    quality_mode = args.quality.lower()
+    if quality_mode == 'match' and source_bitrate:
+        # Match original bitrate
+        bitrate_str = f"{source_bitrate // 1000}k"  # Convert to kbps
+        encode_opts = ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", bitrate_str]
+        report_progress(86, f"Using 'Match Original' mode: {source_bitrate // 1000000}Mbps")
+    else:
+        # CRF mode (visually lossless)
+        encode_opts = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "18", "-b:v", "0"]
+        report_progress(86, "Using 'CRF 18' mode (visually lossless)")
+    
+    # Function to check for overlay_cuda support
+    def has_overlay_cuda():
+        try:
+            result = subprocess.run(["/usr/bin/ffmpeg", "-filters"], capture_output=True, text=True)
+            return "overlay_cuda" in result.stdout
+        except:
+            return False
+
+    use_gpu_overlay = has_overlay_cuda()
+    if use_gpu_overlay:
+        report_progress(87, "Using GPU-accelerated overlay (overlay_cuda)")
+    
+    # Final composite with progress reporting
+    # Final composite with progress reporting
+    # NOTE: We use CPU decoding to ensure rotation metadata is respected (fixing upside-down issues).
+    # We then upload to GPU for the heavy overlay work.
     cmd = [
         "/usr/bin/ffmpeg", "-y",
         "-i", args.video,
         "-i", full_ovr,
-        "-filter_complex", "[0:v]format=yuv420p[base];[1:v]format=rgba[ovr];[base][ovr]overlay=0:0,format=yuv420p[out]",
-        "-map", "[out]",
-        "-map", "0:a",
-        "-c:v", "h264_nvenc", "-preset", "p1", "-b:v", "20M",
+    ]
+    
+    if use_gpu_overlay:
+        # Hybrid Pipeline: CPU Decode -> GPU Overlay -> GPU Encode
+        # 1. [0:v] is CPU decoded (handles rotation) -> upload to GPU
+        # 2. [1:v] is overlay image -> upload to GPU
+        cmd += [
+            "-filter_complex", 
+            "[0:v]format=yuv420p,hwupload_cuda,scale_cuda=format=yuv420p[base];[1:v]format=rgba,hwupload_cuda[ovr];[base][ovr]overlay_cuda=0:0[out]",
+            "-map", "[out]",
+            "-map", "0:a",
+        ]
+    else:
+        # Fallback: CPU overlay (requires downloading frames from GPU)
+        cmd += [
+            "-filter_complex", "[0:v]format=yuv420p[base];[1:v]format=rgba[ovr];[base][ovr]overlay=0:0,format=yuv420p[out]",
+            "-map", "[out]",
+            "-map", "0:a",
+        ]
+    
+    cmd += encode_opts + [
         "-c:a", "aac",
         "-shortest",
+        "-progress", "pipe:1",  # Output progress to stdout
         args.output
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    
+    # Run with progress parsing
+    import re
+    # Merge stderr into stdout to prevent buffer deadlock
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    
+    last_progress = 85
+    last_update_time = time.time()
+    
+    while True:
+        line = process.stdout.readline()
+        if not line and process.poll() is not None:
+            break
+        
+        # Parse out_time (format: HH:MM:SS.microseconds)
+        if line.startswith('out_time='):
+            try:
+                time_str = line.split('=')[1].strip()
+                # Skip N/A or negative values
+                if time_str and time_str != 'N/A' and not time_str.startswith('-'):
+                    # Parse HH:MM:SS.microseconds
+                    parts = time_str.split(':')
+                    if len(parts) == 3:
+                        hours = int(parts[0])
+                        minutes = int(parts[1])
+                        seconds = float(parts[2])
+                        time_s = hours * 3600 + minutes * 60 + seconds
+                        
+                        encode_progress = min(94, 85 + int((time_s / duration) * 9))
+                        if encode_progress > last_progress or (time.time() - last_update_time > 5):
+                            report_progress(encode_progress, f"Encoding: {int(time_s)}s / {int(duration)}s")
+                            last_progress = encode_progress
+                            last_update_time = time.time()
+            except Exception as e:
+                pass
+        
+        # Heartbeat: send update every 10s even if parsing fails
+        if time.time() - last_update_time > 10:
+            report_progress(last_progress, "Encoding in progress...")
+            last_update_time = time.time()
+    
+    # Check for errors
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd, stderr="See stdout for details")
     
     # Cleanup
     report_progress(95, "Cleaning up temp files...")

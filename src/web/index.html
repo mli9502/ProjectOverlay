@@ -39,6 +39,13 @@
 
             <!-- Generate Button -->
             <div class="generate-section">
+                <div class="quality-selector">
+                    <label for="quality-mode">Output Quality:</label>
+                    <select id="quality-mode">
+                        <option value="crf" selected>High Quality (CRF 18)</option>
+                        <option value="match">Match Original Bitrate</option>
+                    </select>
+                </div>
                 <button id="btn-generate" class="btn btn-primary" disabled>
                     Generate Video
                 </button>
