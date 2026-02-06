@@ -41,9 +41,10 @@
             <div class="generate-section">
                 <div class="quality-selector">
                     <label for="quality-mode">Output Quality:</label>
-                    <select id="quality-mode">
-                        <option value="crf" selected>High Quality (CRF 18)</option>
-                        <option value="match">Match Original Bitrate</option>
+                    <select id="quality-select">
+                        <option value="match" selected>Match Original Bitrate (Recommended)</option>
+                        <option value="crf">High Quality (CRF 18)</option>
+                        <option value="preview">Fast Preview (360p Low Quality)</option>
                     </select>
                 </div>
                 <button id="btn-generate" class="btn btn-primary" disabled>
@@ -103,7 +104,7 @@
         </div>
     </div>
 
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
 </body>
 
 </html>

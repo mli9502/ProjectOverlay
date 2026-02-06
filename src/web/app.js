@@ -587,7 +587,7 @@ document.getElementById('btn-generate').addEventListener('click', async () => {
     progressContainer.classList.remove('hidden');
 
     try {
-        const qualityMode = document.getElementById('quality-mode').value;
+        const qualityMode = document.getElementById('quality-select').value;
         await window.api.generate({
             fitPath: state.fitPath,
             videoPath: state.videoPath,

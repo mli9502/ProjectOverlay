@@ -73,10 +73,11 @@ META_FPS = 0
 OFFSET_SECONDS = 0
 VIDEO_PATH = None
 CONFIG = None
+LAYOUT_SCALE = 1.0
 
 
-def init_worker(df, w, h, fps, video_path, config, offset):
-    global DF_GLOBAL, META_W, META_H, META_FPS, VIDEO_PATH, CONFIG, OFFSET_SECONDS
+def init_worker(df, w, h, fps, video_path, config, offset, l_scale):
+    global DF_GLOBAL, META_W, META_H, META_FPS, VIDEO_PATH, CONFIG, OFFSET_SECONDS, LAYOUT_SCALE
     DF_GLOBAL = df
     META_W = w
     META_H = h
@@ -84,6 +85,7 @@ def init_worker(df, w, h, fps, video_path, config, offset):
     VIDEO_PATH = video_path
     CONFIG = config
     OFFSET_SECONDS = offset
+    LAYOUT_SCALE = l_scale
 
 
 def render_overlay_chunk(args):
@@ -107,7 +109,11 @@ def render_overlay_chunk(args):
                 row = {}
             row_dict = row.to_dict() if isinstance(row, pd.Series) else {}
             row_dict['full_track_df'] = DF_GLOBAL
-            last_img_rgba = create_frame_rgba(t, row_dict, META_W, META_H, config=CONFIG)
+            
+            # Use calculated layout scale
+            scale_factor = LAYOUT_SCALE
+            
+            last_img_rgba = create_frame_rgba(t, row_dict, META_W, META_H, config=CONFIG, layout_scale=scale_factor)
             last_t = t
         return last_img_rgba
 
@@ -242,6 +248,17 @@ def main():
         report_progress(7, "Warning: Could not auto-sync (missing metadata). Using default offset 0s")
 
     report_progress(10, f"Video: {w}x{h}, {duration:.1f}s @ {fps:.1f}fps")
+
+    # Check Quality Mode and modify resolution if needed
+    quality_mode = args.quality.lower()
+    if quality_mode == 'preview':
+        # Force 360p resolution for generation
+        w, h = 640, 360
+        report_progress(11, "Preview Mode: Overriding resolution to 640x360 for speed.")
+
+    # Calculate layout scale (Reference height: 1080p)
+    # If 4K (2160p), scale=2.0. If 360p, scale=0.33.
+    layout_scale = h / 1080.0
     
     num_processes = 8
     chunk_duration = 30
@@ -258,7 +275,7 @@ def main():
     with multiprocessing.Pool(
         processes=num_processes, 
         initializer=init_worker, 
-        initargs=(df, w, h, fps, args.video, config, calculated_offset)
+        initargs=(df, w, h, fps, args.video, config, calculated_offset, layout_scale)
     ) as pool:
         ovr_files = []
         for i, result in enumerate(pool.imap(render_overlay_chunk, chunks)):
@@ -287,6 +304,15 @@ def main():
         bitrate_str = f"{source_bitrate // 1000}k"  # Convert to kbps
         encode_opts = ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", bitrate_str]
         report_progress(86, f"Using 'Match Original' mode: {source_bitrate // 1000000}Mbps")
+    elif quality_mode == 'preview':
+        # Fast Preview: 360p, libx264 ultrafast (CPU encoding is fast enough at 360p and safer for alignment)
+        w, h = 640, 360
+        report_progress(11, "Preview Mode: Overriding resolution to 640x360 for speed.")
+        # Re-calc layout scale for 360p
+        layout_scale = h / 1080.0
+        
+        encode_opts = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p"]
+        report_progress(86, "Using 'Fast Preview' mode (360p CPU/libx264)")
     else:
         # CRF mode (visually lossless)
         encode_opts = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "18", "-b:v", "0"]
@@ -301,10 +327,19 @@ def main():
             return False
 
     use_gpu_overlay = has_overlay_cuda()
+    
+    # Override for Preview: Use Pure CPU Pipeline
+    # Why: 
+    # 1. CPU Decoding needed for Rotation fix.
+    # 2. CPU Overlay/Encoding avoids Green Bar (NVENC padding/alignment issues).
+    # 3. 360p scaling/encoding on CPU is negligible (fast enough).
+    if quality_mode == 'preview':
+        use_gpu_overlay = False
+        report_progress(87, "Preview Mode: Using CPU pipeline for robustness (Rotation/Colors).")
+
     if use_gpu_overlay:
         report_progress(87, "Using GPU-accelerated overlay (overlay_cuda)")
     
-    # Final composite with progress reporting
     # Final composite with progress reporting
     # NOTE: We use CPU decoding to ensure rotation metadata is respected (fixing upside-down issues).
     # We then upload to GPU for the heavy overlay work.
@@ -316,8 +351,6 @@ def main():
     
     if use_gpu_overlay:
         # Hybrid Pipeline: CPU Decode -> GPU Overlay -> GPU Encode
-        # 1. [0:v] is CPU decoded (handles rotation) -> upload to GPU
-        # 2. [1:v] is overlay image -> upload to GPU
         cmd += [
             "-filter_complex", 
             "[0:v]format=yuv420p,hwupload_cuda,scale_cuda=format=yuv420p[base];[1:v]format=rgba,hwupload_cuda[ovr];[base][ovr]overlay_cuda=0:0[out]",
@@ -325,9 +358,11 @@ def main():
             "-map", "0:a",
         ]
     else:
-        # Fallback: CPU overlay (requires downloading frames from GPU)
+        # Fallback: CPU overlay
+        # For preview, we scale inputs to 640x360
+        scale_filter = ",scale=640:360" if quality_mode == 'preview' else ""
         cmd += [
-            "-filter_complex", "[0:v]format=yuv420p[base];[1:v]format=rgba[ovr];[base][ovr]overlay=0:0,format=yuv420p[out]",
+            "-filter_complex", f"[0:v]format=yuv420p{scale_filter}[base];[1:v]format=rgba{scale_filter}[ovr];[base][ovr]overlay=0:0,format=yuv420p[out]",
             "-map", "[out]",
             "-map", "0:a",
         ]
@@ -374,6 +409,10 @@ def main():
             except Exception as e:
                 pass
         
+        # Relay errors to stderr for debugging
+        elif "Error" in line or "Fatal" in line or "Failed" in line:
+             print(f"FFMPEG: {line}", file=sys.stderr, flush=True)
+
         # Heartbeat: send update every 10s even if parsing fails
         if time.time() - last_update_time > 10:
             report_progress(last_progress, "Encoding in progress...")

@@ -30,12 +30,14 @@ PROFILE_W = 0
 PROFILE_H = 0
 
 
-def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=None):
+def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=None, layout_scale=1.0):
     """
     Creates a transparent PIL image with the HUD overlay for a specific time t.
     
     config: dict with component settings, e.g.:
         {'speed': {'enabled': True, 'scale': 1.0, 'opacity': 1.0}, ...}
+
+    layout_scale: Scaling factor for resolution independence (e.g. 1.0 for 1080p, 0.33 for 360p).
     """
     # Default config if not provided
     if config is None:
@@ -46,26 +48,29 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
             'gradient': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
             'map': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
             'elevation': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
-            'map': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
-            'elevation': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
             'heart_rate': {'enabled': True, 'scale': 1.0, 'opacity': 1.0},
         }
     
     def get_cfg(name):
         return config.get(name, {'enabled': True, 'scale': 1.0, 'opacity': 1.0})
     
+    # Helper for layout scaling
+    def sc(val):
+        return int(val * layout_scale)
+    
     # Create a background with bg_color (supports RGBA or RGB)
     img = Image.new('RGBA' if len(bg_color) == 4 else 'RGB', (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
     # Layout configuration
-    margin_left = 50
-    margin_top = 50
+    margin_left = sc(50)
+    margin_top = sc(50)
     
     # 1. Speed (Top Left)
     cfg = get_cfg('speed')
     if cfg['enabled']:
-        scale = cfg.get('scale', 1.0)
+        # Combine user scale preference with layout scale
+        scale = cfg.get('scale', 1.0) * layout_scale
         font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
         font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
         
@@ -81,7 +86,7 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
     # 2. Power
     cfg = get_cfg('power')
     if cfg['enabled']:
-        scale = cfg.get('scale', 1.0)
+        scale = cfg.get('scale', 1.0) * layout_scale
         font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
         font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
         
@@ -90,14 +95,14 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         
         opacity = int(255 * cfg['opacity'])
         color = (255, 255, 255, opacity)
-        y_pos = margin_top + 200
+        y_pos = margin_top + sc(200)
         draw.text((margin_left, y_pos), f"{power:.0f}", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "W", font=font_label, fill=color)
     
     # 3. Cadence
     cfg = get_cfg('cadence')
     if cfg['enabled']:
-        scale = cfg.get('scale', 1.0)
+        scale = cfg.get('scale', 1.0) * layout_scale
         font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
         font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
         
@@ -106,14 +111,14 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         
         opacity = int(255 * cfg['opacity'])
         color = (255, 255, 255, opacity)
-        y_pos = margin_top + 400
+        y_pos = margin_top + sc(400)
         draw.text((margin_left, y_pos), f"{cadence:.0f}", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "RPM", font=font_label, fill=color)
     
     # 4. Heart Rate (Below Cadence)
     cfg = get_cfg('heart_rate')
     if cfg['enabled']:
-        scale = cfg.get('scale', 1.0)
+        scale = cfg.get('scale', 1.0) * layout_scale
         font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
         font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
         
@@ -122,14 +127,14 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         
         opacity = int(255 * cfg['opacity'])
         color = (255, 255, 255, opacity)
-        y_pos = margin_top + 600
+        y_pos = margin_top + sc(600)
         draw.text((margin_left, y_pos), f"{hr:.0f}", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "BPM", font=font_label, fill=color)
 
     # 5. Gradient (Below HR)
     cfg = get_cfg('gradient')
     if cfg['enabled']:
-        scale = cfg.get('scale', 1.0)
+        scale = cfg.get('scale', 1.0) * layout_scale
         font_large = get_scaled_font(FONT_PATH_BOLD, 80, scale)
         font_label = get_scaled_font(FONT_PATH_REGULAR, 20, scale)
         
@@ -138,7 +143,7 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         
         opacity = int(255 * cfg['opacity'])
         color = (255, 255, 255, opacity)
-        y_pos = margin_top + 800
+        y_pos = margin_top + sc(800)
         draw.text((margin_left, y_pos), f"{grade:.1f}%", font=font_large, fill=color)
         draw.text((margin_left, y_pos + int(80 * scale)), "GRADIENT", font=font_label, fill=color)
     
@@ -148,10 +153,15 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         full_track = data_row.get('full_track_df')
         if full_track is not None and not full_track.empty:
             # Map settings - apply scale
+            user_scale = cfg.get('scale', 1.0)
             base_map_size = 300
-            map_size = int(base_map_size * cfg.get('scale', 1.0))
-            map_x = width - map_size - 50
-            map_y = 50
+            map_size = int(base_map_size * user_scale * layout_scale)
+            
+            # Ensure map_size is at least 1 pixel
+            map_size = max(1, map_size)
+            
+            map_x = width - map_size - sc(50)
+            map_y = sc(50)
             
             # Get bounds
             lats = full_track['position_lat'].dropna()
@@ -207,20 +217,15 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
                                 map_draw.line(points, fill="blue", width=3)
                                 
                             CACHED_BACKGROUND = map_img
-                        else:
-                             CACHED_BACKGROUND = None
-
                     except Exception as e:
                         print(f"Map cache init failed: {e}")
                         CACHED_BACKGROUND = None
 
                 # Use Cached Background
                 if CACHED_BACKGROUND and MAP_OBJ:
-                    # Get the original cached size
-                    cached_size = CACHED_BACKGROUND.size[0]  # Assuming square
-                    
-                    # Resize if needed  
-                    if map_size != cached_size:
+                    # Resize if size changed (due to scale change)
+                    current_cached_size = CACHED_BACKGROUND.size[0]
+                    if map_size != current_cached_size:
                         map_copy = CACHED_BACKGROUND.resize((map_size, map_size), Image.LANCZOS)
                     else:
                         map_copy = CACHED_BACKGROUND.copy()
@@ -249,7 +254,7 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
                         cx = map_x + x * scale_x
                         cy = map_y + y * scale_y
                         
-                        r = max(4, int(6 * cfg.get('scale', 1.0)))  # Scale marker size too
+                        r = max(4, int(6 * user_scale * layout_scale))
                         draw.ellipse((cx-r, cy-r, cx+r, cy+r), fill="yellow", outline="black")
 
     # 7. Elevation Profile (Bottom)
@@ -258,11 +263,14 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
         full_track = data_row.get('full_track_df')
         if full_track is not None and not full_track.empty:
             # Profile settings - apply scale to height
+            user_scale = cfg.get('scale', 1.0)
             base_prof_h = 150
-            prof_h = int(base_prof_h * cfg.get('scale', 1.0))
-            prof_w = width - 100
-            prof_x = 50
-            prof_y = height - prof_h - 50
+            prof_h = int(base_prof_h * user_scale * layout_scale)
+            prof_h = max(1, prof_h)
+            
+            prof_w = width - sc(100)
+            prof_x = sc(50)
+            prof_y = height - prof_h - sc(50)
             
             global CACHED_PROFILE, PROFILE_W, PROFILE_H
             
@@ -339,5 +347,4 @@ def create_frame_rgba(t, data_row, width, height, bg_color=(0, 0, 0, 0), config=
     return img
 
 def create_frame(t, data_row, width, height, bg_color=(0, 0, 0, 0)):
-    img = create_frame_rgba(t, data_row, width, height, bg_color)
-    return np.array(img)
+    return np.array(create_frame_rgba(t, data_row, width, height, bg_color))
